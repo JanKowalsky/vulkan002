@@ -7,18 +7,12 @@
 
 struct Vertex
 {
-	glm::vec3 pos;
-	float pad;
-};
-
-struct RecordImage
-{
-	void destroy();
-	
-	VkDeviceMemory img_mem = VK_NULL_HANDLE;
-	VkImage img = VK_NULL_HANDLE;
-	VkDeviceMemory img_mem1 = VK_NULL_HANDLE;
-	VkImage img1 = VK_NULL_HANDLE;
+    glm::vec3 pos;
+    float p0;
+    glm::vec3 norm;
+    float p1;
+    glm::vec2 uv;
+    float p2[2];
 };
 
 struct VulkanImage

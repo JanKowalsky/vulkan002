@@ -36,7 +36,8 @@ SOURCES +=\
     recorder.cpp \
     shader.cpp \
     Source.cpp \
-    Timer.cpp
+    Timer.cpp \
+    model.cpp
 
 HEADERS  += VulkanWindow.h \
     camera.h \
@@ -48,7 +49,8 @@ HEADERS  += VulkanWindow.h \
     Scene.h \
     shader.h \
     Timer.h \
-    vulkan_math.h
+    vulkan_math.h \
+    model.h
 
 FORMS    += VulkanWindow.ui
 
@@ -64,3 +66,4 @@ DEPENDPATH += $$PWD/../../VulkanSDK/1.0.39.1/x86_64/include
 unix:!macx: LIBS += -lswscale
 unix:!macx: LIBS += -lx264
 unix:!macx: LIBS += -lavcodec
+unix:!macx: LIBS += -lassimp

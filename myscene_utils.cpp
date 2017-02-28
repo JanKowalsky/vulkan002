@@ -2,35 +2,6 @@
 
 #include "engine.h"
 
-void RecordImage::destroy()
-{
-	VkDevice d = VulkanEngine::get().getDevice();
-	
-	if(img != VK_NULL_HANDLE)
-	{
-		vkDestroyImage(d, img, VK_NULL_HANDLE);
-		img = VK_NULL_HANDLE;
-	}
-	
-	if(img1 != VK_NULL_HANDLE)
-	{
-		vkDestroyImage(d, img1, VK_NULL_HANDLE);
-		img1 = VK_NULL_HANDLE;
-	}
-	
-	if(img_mem1 != VK_NULL_HANDLE)
-	{
-		vkFreeMemory(d, img_mem1, VK_NULL_HANDLE);
-		img_mem1 = VK_NULL_HANDLE;
-	}
-	
-	if(img_mem != VK_NULL_HANDLE)
-	{
-		vkFreeMemory(d, img_mem, VK_NULL_HANDLE);
-		img_mem = VK_NULL_HANDLE;
-	}
-}
-
 void VulkanImage::destroy()
 {
 	VkDevice d = VulkanEngine::get().getDevice();

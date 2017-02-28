@@ -4,40 +4,27 @@
 #include <cstdlib>
 #include <future>
 #include <QImage>
+#include <QScreen>
+#include <QGuiApplication>
+#include "model.h"
 
 enum SemNames{s_acquire_image, s_submit, num_sems};
 //enum FenNames{f_submit, num_fences};
 
-constexpr const auto img_filename = "bridge.jpg";
+VulkanRecorder recorder;
 
-constexpr const float x_bound = 1000.0f;
-constexpr const float y_bound = 1000.0f;
-constexpr const float z_bound = 1000.0f;
-constexpr const float min_speed = 50.0f;
-constexpr const float mid_speed = 100.0f;
-constexpr const float top_speed = 200.0f;
+constexpr const char* img_filename = "bridge.jpg";
 
 constexpr const uint32_t video_res_x = 1920;
 constexpr const uint32_t video_res_y = 1080;
 constexpr const uint8_t video_fps = 25;
 constexpr const auto vid_filename = "tmp.mp4";
 bool recording = false;
-
-bool snap = false;
-
 bool cam_move = false;
 
 struct s_constants
 {
-	glm::mat4x4 vp;
-	float dt;
-	float particle_speed = min_speed;
-    uint32_t res_x = 400;
-    uint32_t res_y = 300;
-	glm::vec3 eyeW;
-	float p0;
-	glm::vec3 curDirNW;
-	float p1;
+    glm::mat4x4 vp;
 } constants;
 
 void loadImage(std::string pathname, uint16_t size_x, uint16_t size_y, void** dst)
@@ -107,7 +94,6 @@ void MyScene::initialize()
 	initImage();
 	initVertexBuffer();
 	initSampler();
-	initRecordImages();
 	initDescriptorSets();
 	
 	initSurfaceDependentObjects();
@@ -120,7 +106,6 @@ void MyScene::initSurfaceDependentObjects()
 	
 	initRenderTargets();
 	initGraphicsPipeline();
-	recordRecordCmdBuf();
 }
 
 void MyScene::destroySurfaceDependentObjects()
@@ -215,169 +200,6 @@ void MyScene::initCommandBuffers()
 	command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	
 	vkAllocateCommandBuffers(e.getDevice(), &command_buffer_allocate_info, m_command_buffers.data());
-	
-	/*---Initialize record command pool and record command buffers---*/
-	
-	m_record_command_buffers.resize(m_command_buffers.size());
-	
-	command_pool_create_info.flags = 0;
-	
-	vkCreateCommandPool(e.getDevice(), &command_pool_create_info, VK_NULL_HANDLE, &m_record_command_pool);
-	
-	command_buffer_allocate_info.commandPool = m_record_command_pool;
-	command_buffer_allocate_info.commandBufferCount = m_record_command_buffers.size();
-	command_buffer_allocate_info.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
-	
-	vkAllocateCommandBuffers(e.getDevice(), &command_buffer_allocate_info, m_record_command_buffers.data());
-}
-
-void MyScene::recordRecordCmdBuf()
-{
-	VulkanEngine& e = VulkanEngine::get();
-	
-	vkResetCommandPool(e.getDevice(), m_record_command_pool, 0);
-	
-	/*---Record commands into record command buffers---*/
-	
-	/*These commands will serve to access contents of rendered image
-	on the host, when recording or taking snapshot.*/
-	
-	VkCommandBufferInheritanceInfo inh_info{};
-	inh_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
-	inh_info.pNext = NULL;
-	inh_info.renderPass = m_render_pass;
-	inh_info.occlusionQueryEnable = VK_FALSE;
-	
-	VkCommandBufferBeginInfo rec_cmd_buf_begin_info{};
-	rec_cmd_buf_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	rec_cmd_buf_begin_info.pNext = NULL;
-	rec_cmd_buf_begin_info.flags = 0;
-	rec_cmd_buf_begin_info.pInheritanceInfo = &inh_info;
-	
-	for(size_t i = 0; i < m_record_command_buffers.size(); i++)
-	{
-		VkCommandBuffer cmd_buf = m_record_command_buffers[i];
-		
-		vkBeginCommandBuffer(cmd_buf, &rec_cmd_buf_begin_info);
-	
-			VkImageMemoryBarrier img_to_trans_d{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[i].img,
-			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
-			
-			vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &img_to_trans_d);
-			
-			VkImageBlit blit_reg{};
-			blit_reg.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-			blit_reg.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-			blit_reg.srcOffsets[0] = {0, 0, 0};
-			blit_reg.srcOffsets[1] = {(int32_t)e.getSurfaceExtent().width, (int32_t)e.getSurfaceExtent().height, 1};
-			blit_reg.dstOffsets[0] = {0, 0, 0};
-			blit_reg.dstOffsets[1] = {video_res_x, video_res_y, 1};
-			
-			vkCmdBlitImage(cmd_buf, m_render_targets[i].target_image.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_record_images[i].img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit_reg, VK_FILTER_NEAREST);
-			
-			VkImageMemoryBarrier img_to_trans_s{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[i].img,
-			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
-			
-			VkImageMemoryBarrier img1_to_trans_d{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[i].img1,
-			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
-			
-			VkImageMemoryBarrier bar1[] = {img_to_trans_s, img1_to_trans_d};
-			
-			vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 2, bar1);
-			
-			VkImageCopy cpy{};
-			cpy.srcOffset = {0,0,0};
-			cpy.dstOffset = {0,0,0};
-			cpy.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-			cpy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-			cpy.extent = {video_res_x, video_res_y, 1};
-			
-			vkCmdCopyImage(cmd_buf, m_record_images[i].img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_record_images[i].img1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy);
-			
-			VkImageMemoryBarrier img1_to_general{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[i].img1,
-			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
-			
-			vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &img1_to_general);
-	
-		vkEndCommandBuffer(cmd_buf);
-	}
-}
-
-void MyScene::initRecordImages()
-{
-	VulkanEngine& e = VulkanEngine::get();
-	
-	m_record_images.resize(e.getSwapchainImages().size());
-	
-	/*Image to frist blit to, changing format and size*/
-	VkImageCreateInfo ri_create_info{};
-	ri_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-	ri_create_info.pNext = NULL;
-	ri_create_info.flags = 0;
-	ri_create_info.imageType = VK_IMAGE_TYPE_2D;
-	ri_create_info.format = VK_FORMAT_R8G8B8A8_UINT;
-	ri_create_info.extent = VkExtent3D{video_res_x, video_res_y, 1};
-	ri_create_info.mipLevels = 1;
-	ri_create_info.arrayLayers = 1;
-	ri_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
-	ri_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-	ri_create_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-	ri_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	ri_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	
-	/*Staging image to then copy to and read from on the host*/
-	VkImageCreateInfo ti_create_info{};
-	ti_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-	ti_create_info.pNext = NULL;
-	ti_create_info.flags = 0;
-	ti_create_info.imageType = VK_IMAGE_TYPE_2D;
-	ti_create_info.format = VK_FORMAT_R8G8B8A8_UINT;
-	ti_create_info.extent = VkExtent3D{video_res_x, video_res_y, 1};
-	ti_create_info.mipLevels = 1;
-	ti_create_info.arrayLayers = 1;
-	ti_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
-	ti_create_info.tiling = VK_IMAGE_TILING_LINEAR;
-	ti_create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-	ti_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	ti_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	
-	
-	VkMemoryRequirements req{};
-	VkMemoryAllocateInfo alloc_info{};
-	alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	alloc_info.pNext = NULL;
-	
-	for(auto& ri : m_record_images)
-	{
-		/*img*/
-		vkCreateImage(e.getDevice(), &ri_create_info, VK_NULL_HANDLE, &ri.img);
-		
-		vkGetImageMemoryRequirements(e.getDevice(), ri.img, &req);
-		
-		alloc_info.allocationSize = req.size;
-		alloc_info.memoryTypeIndex = findMemoryTypeIndex(req.memoryTypeBits);
-		
-		vkAllocateMemory(e.getDevice(), &alloc_info, VK_NULL_HANDLE, &ri.img_mem);
-		
-		vkBindImageMemory(e.getDevice(), ri.img, ri.img_mem, 0);
-		
-		/*img1*/
-		vkCreateImage(e.getDevice(), &ti_create_info, VK_NULL_HANDLE, &ri.img1);
-		
-		vkGetImageMemoryRequirements(e.getDevice(), ri.img1, &req);
-		alloc_info.allocationSize = req.size;
-		alloc_info.memoryTypeIndex = findMemoryTypeIndex(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-		
-		vkAllocateMemory(e.getDevice(), &alloc_info, VK_NULL_HANDLE, &ri.img_mem1);
-		
-		vkBindImageMemory(e.getDevice(), ri.img1, ri.img_mem1, 0);
-	}
-	
-	
 }
 
 void MyScene::initSampler()
@@ -411,7 +233,7 @@ void MyScene::initImage()
 	image_create_info.flags = 0;
 	image_create_info.imageType = VK_IMAGE_TYPE_2D;
 	image_create_info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-	image_create_info.extent = VkExtent3D{constants.res_x, constants.res_y, 1};
+    image_create_info.extent = VkExtent3D{400, 300, 1};
 	image_create_info.mipLevels = 1;
 	image_create_info.arrayLayers = 1;
 	image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -420,10 +242,10 @@ void MyScene::initImage()
 	image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	image_create_info.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;
 	
-	vkCreateImage(d, &image_create_info, VK_NULL_HANDLE, &m_image);
+    vkCreateImage(d, &image_create_info, VK_NULL_HANDLE, &m_image.img);
 	
 	VkMemoryRequirements mem_req;
-	vkGetImageMemoryRequirements(d, m_image, &mem_req);
+    vkGetImageMemoryRequirements(d, m_image.img, &mem_req);
 	
 	VkMemoryAllocateInfo mem_alloc_info{};
 	mem_alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -431,17 +253,17 @@ void MyScene::initImage()
 	mem_alloc_info.allocationSize = mem_req.size;
 	mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 	
-	vkAllocateMemory(d, &mem_alloc_info, VK_NULL_HANDLE, &m_image_memory);
-	vkBindImageMemory(d, m_image, m_image_memory, 0);
+    vkAllocateMemory(d, &mem_alloc_info, VK_NULL_HANDLE, &m_image.mem);
+    vkBindImageMemory(d, m_image.img, m_image.mem, 0);
 	
 	/*Load image*/
 	
 	void* ptr;
-	vkMapMemory(d, m_image_memory, 0, VK_WHOLE_SIZE, 0, &ptr);
+    vkMapMemory(d, m_image.mem, 0, VK_WHOLE_SIZE, 0, &ptr);
 	
-	loadImage(img_filename, constants.res_x, constants.res_y, &ptr);
+    loadImage(img_filename, 400, 300, &ptr);
 	
-	vkUnmapMemory(d, m_image_memory);
+    vkUnmapMemory(d, m_image.mem);
 	
 	/*Create image view*/
 	
@@ -449,36 +271,13 @@ void MyScene::initImage()
 	iv_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	iv_create_info.pNext = NULL;
 	iv_create_info.flags = 0;
-	iv_create_info.image = m_image;
+    iv_create_info.image = m_image.img;
 	iv_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
 	iv_create_info.format = image_create_info.format;
 	iv_create_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
 	iv_create_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
 	
-	vkCreateImageView(d, &iv_create_info, VK_NULL_HANDLE, &m_image_view);
-}
-
-void MyScene::destroyImage()
-{
-	VkDevice d = VulkanEngine::get().getDevice();
-	
-	if(m_image_view != VK_NULL_HANDLE)
-	{
-		vkDestroyImageView(d, m_image_view, VK_NULL_HANDLE);
-		m_image_view = VK_NULL_HANDLE;
-	}
-	
-	if(m_image != VK_NULL_HANDLE)
-	{
-		vkDestroyImage(d, m_image, VK_NULL_HANDLE);
-		m_image = VK_NULL_HANDLE;
-	}
-	
-	if(m_image_memory != VK_NULL_HANDLE)
-	{
-		vkFreeMemory(d, m_image_memory, VK_NULL_HANDLE);
-		m_image_memory = VK_NULL_HANDLE;
-	}
+    vkCreateImageView(d, &iv_create_info, VK_NULL_HANDLE, &m_image.img_view);
 }
 
 void MyScene::initRenderTargets()
@@ -496,7 +295,7 @@ void MyScene::initRenderTargets()
 	image_create_info.pNext = NULL;
 	image_create_info.flags = 0;
 	image_create_info.imageType = VK_IMAGE_TYPE_2D;
-	image_create_info.format = VK_FORMAT_R8G8B8A8_UINT;//VulkanEngine::get().getSurfaceFormat();
+    image_create_info.format = VK_FORMAT_R8G8B8A8_UINT;
 	image_create_info.extent = VkExtent3D{VulkanEngine::get().getSurfaceExtent().width, VulkanEngine::get().getSurfaceExtent().height, 1};
 	image_create_info.mipLevels = 1;
 	image_create_info.arrayLayers = 1;
@@ -708,11 +507,64 @@ void MyScene::initRenderTargets()
 	}
 }
 
+unsigned int num_ind = 0;
+
 void MyScene::initVertexBuffer()
 {
 	VulkanEngine& e = VulkanEngine::get();
 	
-	/*---Creating buffer---*/
+    /*---loading data---*/
+
+    const aiScene* scene = aiImportFile("model.obj", aiProcessPreset_TargetRealtime_MaxQuality);
+    aiMesh* mesh = *scene->mMeshes;
+
+    std::vector<unsigned int> indices;
+    indices.reserve(mesh->mNumFaces*3);
+    for(size_t f = 0; f < mesh->mNumFaces; f++)
+    {
+        aiFace face = mesh->mFaces[f];
+        for(size_t i = 0; i < face.mNumIndices; i++)
+            indices.push_back(face.mIndices[i]);
+    }
+num_ind = indices.size();
+    /*---loading data---*/
+
+    /*---Creating index buffer---*/
+
+    VkBufferCreateInfo ib_create_info{};
+    ib_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    ib_create_info.pNext = NULL;
+    ib_create_info.flags = 0;
+    ib_create_info.size = sizeof(unsigned int)*indices.size();
+    ib_create_info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    ib_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    vkCreateBuffer(e.getDevice(), &ib_create_info, VK_NULL_HANDLE, &m_index_buffer);
+
+    /*Get memory requirements for buffer*/
+    VkMemoryRequirements ib_mem_req;
+    vkGetBufferMemoryRequirements(e.getDevice(), m_index_buffer, &ib_mem_req);
+
+    VkMemoryAllocateInfo ib_mem_alloc_info{};
+    ib_mem_alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ib_mem_alloc_info.pNext = NULL;
+    ib_mem_alloc_info.allocationSize = ib_mem_req.size;
+    ib_mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(ib_mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+
+    /*Allocate memory for the buffer*/
+    vkAllocateMemory(e.getDevice(), &ib_mem_alloc_info, VK_NULL_HANDLE, &m_index_buffer_memory);
+
+    unsigned int* ib_data;
+    vkMapMemory(e.getDevice(), m_index_buffer_memory, 0, VK_WHOLE_SIZE, 0, (void**)&ib_data);
+
+    mempcpy(ib_data, indices.data(), sizeof(unsigned int)*indices.size());
+
+    vkUnmapMemory(e.getDevice(), m_index_buffer_memory);
+
+    /*Bind memory to the buffer*/
+    vkBindBufferMemory(e.getDevice(), m_index_buffer, m_index_buffer_memory, 0);
+
+    /*---Creating vertex buffer---*/
 	
 	/*Specify usage as storage texel buffer to store formatted vertex data,
 	that can be read and written inside shaders*/
@@ -720,12 +572,9 @@ void MyScene::initVertexBuffer()
 	vb_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 	vb_create_info.pNext = NULL;
 	vb_create_info.flags = 0;
-	vb_create_info.size = sizeof(Vertex) * constants.res_x * constants.res_y;
-	vb_create_info.usage = VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
+    vb_create_info.size = sizeof(Vertex)*mesh->mNumVertices;
+    vb_create_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
 	vb_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	vb_create_info.queueFamilyIndexCount = 1;
-	uint32_t qfi = e.getQueueFamilyIndexGeneral();
-	vb_create_info.pQueueFamilyIndices = &qfi;
 	
 	vkCreateBuffer(e.getDevice(), &vb_create_info, VK_NULL_HANDLE, &m_vertex_buffer);
 	
@@ -742,38 +591,25 @@ void MyScene::initVertexBuffer()
 	/*Allocate memory for the buffer*/
 	vkAllocateMemory(e.getDevice(), &vb_mem_alloc_info, VK_NULL_HANDLE, &m_vertex_buffer_memory);
 	
-	/*Map buffer memory*/
-	Vertex* mem;
-	vkMapMemory(e.getDevice(), m_vertex_buffer_memory, 0, VK_WHOLE_SIZE, 0, (void**)&mem);
-	
-	const uint32_t numVerts = constants.res_x * constants.res_y;
-	
-	/*Generate random initial location for each vertex, within specified bounds*/
-	for(size_t v = 0; v < numVerts; v++)
-	{
-		mem[v].pos.x = (2*float((float)std::rand() / (float)RAND_MAX) - 1.0f) * x_bound;
-		mem[v].pos.y = (2*float((float)std::rand() / (float)RAND_MAX) - 1.0f) * y_bound;
-		mem[v].pos.z = (2*float((float)std::rand() / (float)RAND_MAX) - 1.0f) * z_bound;
-	}
-	
-	/*Unmap buffer memory*/
-	vkUnmapMemory(e.getDevice(), m_vertex_buffer_memory);
-	
+    Vertex* vb_data;
+    vkMapMemory(e.getDevice(), m_vertex_buffer_memory, 0, VK_WHOLE_SIZE, 0, (void**)&vb_data);
+
+    for(size_t v = 0; v < mesh->mNumVertices; v++)
+    {
+        aiVector3D pos = mesh->mVertices[v];
+        aiVector3D norm = mesh->mNormals[v];
+        aiVector3D uv = mesh->mTextureCoords[0][v];
+        vb_data[v].pos = glm::vec3(pos.x, pos.y, pos.z);
+        vb_data[v].norm = glm::vec3(norm.x, norm.y, norm.z);
+        vb_data[v].uv = glm::vec2(uv.x, uv.y);
+    }
+
+    vkUnmapMemory(e.getDevice(), m_vertex_buffer_memory);
+
 	/*Bind memory to the buffer*/
 	vkBindBufferMemory(e.getDevice(), m_vertex_buffer, m_vertex_buffer_memory, 0);
-	
-	/*---Create vertex buffer view---*/
-	
-	VkBufferViewCreateInfo vb_view_create_info{};
-	vb_view_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO;
-	vb_view_create_info.pNext = NULL;
-	vb_view_create_info.flags = 0;
-	vb_view_create_info.buffer = m_vertex_buffer;
-	vb_view_create_info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-	vb_view_create_info.offset = 0;
-	vb_view_create_info.range = VK_WHOLE_SIZE;
-	
-	vkCreateBufferView(e.getDevice(), &vb_view_create_info, VK_NULL_HANDLE, &m_vertex_buffer_view);
+
+    aiReleaseImport(scene);
 }
 
 void MyScene::initDescriptorSets()
@@ -782,13 +618,6 @@ void MyScene::initDescriptorSets()
 	
 	/*---Create descriptor set layout---*/
 	
-	VkDescriptorSetLayoutBinding vb_binding{};
-	vb_binding.binding = 0;
-	vb_binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
-	vb_binding.descriptorCount = 1;
-	vb_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-	vb_binding.pImmutableSamplers = NULL;
-	
 	VkDescriptorSetLayoutBinding img_binding{};
 	img_binding.binding = 1;
 	img_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -796,7 +625,7 @@ void MyScene::initDescriptorSets()
 	img_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	img_binding.pImmutableSamplers = &m_sampler;
 	
-	std::vector<VkDescriptorSetLayoutBinding> bindings{vb_binding, img_binding};
+    std::vector<VkDescriptorSetLayoutBinding> bindings{img_binding};
 	
 	VkDescriptorSetLayoutCreateInfo desc_set_layout_create_info{};
 	desc_set_layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -810,7 +639,6 @@ void MyScene::initDescriptorSets()
 	/*---Create descriptor pool---*/
 	
 	std::vector<VkDescriptorPoolSize> pool_sizes{
-		{VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1},
 		{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}
 	};
 	
@@ -833,19 +661,9 @@ void MyScene::initDescriptorSets()
 	
 	vkAllocateDescriptorSets(d, &desc_set_allocate_info, &m_descriptor_set);
 	
-	VkWriteDescriptorSet vb_write{};
-	vb_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	vb_write.pNext = NULL;
-	vb_write.dstSet = m_descriptor_set;
-	vb_write.dstBinding = 0;
-	vb_write.dstArrayElement = 0;
-	vb_write.descriptorCount = 1;
-	vb_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
-	vb_write.pTexelBufferView = &m_vertex_buffer_view;
-	
 	VkDescriptorImageInfo img_info{};
 	img_info.sampler = m_sampler;
-	img_info.imageView = m_image_view;
+    img_info.imageView = m_image.img_view;
 	img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	
 	VkWriteDescriptorSet img_write{};
@@ -858,7 +676,7 @@ void MyScene::initDescriptorSets()
 	img_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	img_write.pImageInfo = &img_info;
 	
-	std::vector<VkWriteDescriptorSet> writes{vb_write, img_write};
+    std::vector<VkWriteDescriptorSet> writes{img_write};
 	
 	vkUpdateDescriptorSets(d, writes.size(), writes.data(), 0, NULL);
 }
@@ -888,20 +706,27 @@ void MyScene::initGraphicsPipeline()
 	
 	std::vector<VkPipelineShaderStageCreateInfo> shader_stages = {vs_stage, fs_stage};
 	
+    VkVertexInputBindingDescription v_bind_desc{0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
+    std::vector<VkVertexInputAttributeDescription> v_att_desc{
+      {0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0},
+      {1, 0, VK_FORMAT_R32G32B32_SFLOAT, 4*sizeof(float)},
+      {2, 0, VK_FORMAT_R32G32_SFLOAT, 8*sizeof(float)}
+    };
+
 	VkPipelineVertexInputStateCreateInfo vertex_input_state_create_info{};
 	vertex_input_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 	vertex_input_state_create_info.pNext = NULL;
 	vertex_input_state_create_info.flags = 0;
-	vertex_input_state_create_info.vertexBindingDescriptionCount = 0;//v_in_bind_desc.size();
-	vertex_input_state_create_info.pVertexBindingDescriptions = NULL;//v_in_bind_desc.data();
-	vertex_input_state_create_info.vertexAttributeDescriptionCount = 0;//v_in_att_desc.size();
-	vertex_input_state_create_info.pVertexAttributeDescriptions = NULL;//v_in_att_desc.data();
+    vertex_input_state_create_info.vertexBindingDescriptionCount = 1;
+    vertex_input_state_create_info.pVertexBindingDescriptions = &v_bind_desc;
+    vertex_input_state_create_info.vertexAttributeDescriptionCount = v_att_desc.size();
+    vertex_input_state_create_info.pVertexAttributeDescriptions = v_att_desc.data();
 	
 	VkPipelineInputAssemblyStateCreateInfo input_assembly_state{};
 	input_assembly_state.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
 	input_assembly_state.pNext = NULL;
 	input_assembly_state.flags = 0;
-	input_assembly_state.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+    input_assembly_state.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	input_assembly_state.primitiveRestartEnable = VK_FALSE;
 	
 	VkViewport viewport;
@@ -929,7 +754,7 @@ void MyScene::initGraphicsPipeline()
 	rast_state.flags = 0;
 	rast_state.depthClampEnable = VK_FALSE;
 	rast_state.rasterizerDiscardEnable = VK_FALSE;
-	rast_state.polygonMode = VK_POLYGON_MODE_FILL;
+    rast_state.polygonMode = VK_POLYGON_MODE_FILL;
 	rast_state.cullMode = VK_CULL_MODE_NONE;
 	rast_state.frontFace = VK_FRONT_FACE_CLOCKWISE;
 	rast_state.depthBiasEnable = VK_FALSE;
@@ -1021,18 +846,13 @@ void MyScene::destroy()
 	
 	destroySurfaceDependentObjects();
 	
-	for(auto& ri : m_record_images)
-	{
-		ri.destroy();
-	}
-	
 	if(m_sampler != VK_NULL_HANDLE)
 	{
 		vkDestroySampler(d, m_sampler, VK_NULL_HANDLE);
 		m_sampler = VK_NULL_HANDLE;
 	}
 	
-	destroyImage();
+    m_image.destroy();
 	
 	if (m_primary_command_pool != VK_NULL_HANDLE)
 	{
@@ -1040,18 +860,18 @@ void MyScene::destroy()
 		m_primary_command_pool = VK_NULL_HANDLE;
 	}
 	
-	if (m_record_command_pool != VK_NULL_HANDLE)
-	{
-		vkDestroyCommandPool(d, m_record_command_pool, VK_NULL_HANDLE);
-		m_record_command_pool = VK_NULL_HANDLE;
-	}
-	
-	if(m_vertex_buffer_view != VK_NULL_HANDLE)
-	{
-		vkDestroyBufferView(d, m_vertex_buffer_view, VK_NULL_HANDLE);
-		m_vertex_buffer_view = VK_NULL_HANDLE;
-	}
-	
+    if(m_index_buffer != VK_NULL_HANDLE)
+    {
+        vkDestroyBuffer(d, m_index_buffer, VK_NULL_HANDLE);
+        m_index_buffer = VK_NULL_HANDLE;
+    }
+
+    if(m_index_buffer_memory != VK_NULL_HANDLE)
+    {
+        vkFreeMemory(d, m_index_buffer_memory, VK_NULL_HANDLE);
+        m_index_buffer_memory = VK_NULL_HANDLE;
+    }
+
 	if(m_vertex_buffer != VK_NULL_HANDLE)
 	{
 		vkDestroyBuffer(d, m_vertex_buffer, VK_NULL_HANDLE);
@@ -1088,34 +908,23 @@ void MyScene::onResize()
 	initSurfaceDependentObjects();
 }
 
-void MyScene::recordFrame(uint32_t id)
+void recordFrame()
 {
-	VkDevice d = VulkanEngine::get().getDevice();
-	
-	vkWaitForFences(d, 1, &m_fences[id], VK_TRUE, UINT64_MAX);
-	
-	uint8_t* data;
-	vkMapMemory(d, m_record_images[id].img_mem1, 0, VK_WHOLE_SIZE, 0, (void**)&data);
-	
-	m_recorder.nextFrame(data);
-	
-	vkUnmapMemory(d, m_record_images[id].img_mem1);
+    QScreen* scr = QGuiApplication::screens()[0];
+    QPixmap px = scr->grabWindow(VulkanEngine::get().getWindow()->winId());
+    QImage snap = px.toImage();
+    snap = snap.convertToFormat(QImage::Format_RGBA8888);
+
+    recorder.nextFrame(snap.bits());
 }
 
-void takeSnapshot(VkFence fence, VkDeviceMemory mem)
+void takeSnapshot()
 {
-	VkDevice d = VulkanEngine::get().getDevice();
-	
-	vkWaitForFences(d, 1, &fence, VK_TRUE, UINT64_MAX);
-	
-	uint8_t* data;
-	vkMapMemory(d, mem, 0, VK_WHOLE_SIZE, 0, (void**)&data);
-	
-    QImage snap(data, video_res_x, video_res_y, QImage::Format_RGBA8888);
-    /*Quality set to -1, which chooses default; can be explicitly specified from 0 to 100*/
+    QScreen* scr = QGuiApplication::screens()[0];
+    QPixmap px = scr->grabWindow(VulkanEngine::get().getWindow()->winId());
+    QImage snap = px.toImage();
+
     snap.save("test.png", "PNG", -1);
-	
-	vkUnmapMemory(d, mem);
 }
 
 void MyScene::update()
@@ -1123,7 +932,7 @@ void MyScene::update()
     auto& w = VulkanEngine::get().getWindow();
 
 	float dt = m_timer.getDeltaTime();
-    float speed = w->getKeyState(Qt::Key_Shift) ? 100.0f : 40.0f;
+    float speed = w->getKeyState(Qt::Key_Shift) ? 10.0f : 2.0f;
 	
     if(w->getKeyState(Qt::Key_W)) m_camera->walk(speed*dt);
     if(w->getKeyState(Qt::Key_S)) m_camera->walk(-speed*dt);
@@ -1131,12 +940,8 @@ void MyScene::update()
     if(w->getKeyState(Qt::Key_D)) m_camera->strafe(speed*dt);
     if(w->getKeyState(Qt::Key_Space)) m_camera->upDown(speed*dt);
     if(w->getKeyState(Qt::Key_C)) m_camera->upDown(-speed*dt);
-	
-	constants.dt = m_timer.getDeltaTime();
-	constants.vp = m_camera->getViewProj();
-	
-	constants.eyeW = m_camera->getCamPosW();
-    constants.curDirNW = glm::normalize(glm::affineInverse(m_camera->getView()) * glm::vec4(m_camera->getCurPosProj(*VulkanEngine::get().getWindow()), 0.0f));
+
+    constants.vp = glm::scale(m_camera->getViewProj(), glm::vec3(4,4,4));
 }
 
 void MyScene::render()
@@ -1161,18 +966,18 @@ void MyScene::render()
 	
 	vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline);
 	
-	vkCmdPushConstants(cmd_buf, m_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(s_constants), &constants);
+    vkCmdPushConstants(cmd_buf, m_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(s_constants), &constants);
 	
-	vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_layout, 0, 1, &m_descriptor_set, 0, NULL);
-	
+    vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_layout, 0, 1, &m_descriptor_set, 0, NULL);
+
+    VkDeviceSize vb_offset = 0;
+    vkCmdBindVertexBuffers(cmd_buf, 0, 1, &m_vertex_buffer, &vb_offset);
+    vkCmdBindIndexBuffer(cmd_buf, m_index_buffer, 0, VK_INDEX_TYPE_UINT32);
 		vkCmdBeginRenderPass(cmd_buf, &m_render_targets[image_index].begin_info, VK_SUBPASS_CONTENTS_INLINE);
-	
-		vkCmdDraw(cmd_buf, constants.res_x*constants.res_y, 1, 0, 0);
+
+        vkCmdDrawIndexed(cmd_buf, num_ind, 1, 0, 0, 0);
 	
 		vkCmdEndRenderPass(cmd_buf);
-		
-	if(recording || snap)
-		vkCmdExecuteCommands(cmd_buf, 1, &m_record_command_buffers[image_index]);
 		
 	vkEndCommandBuffer(cmd_buf);
 	
@@ -1204,14 +1009,8 @@ void MyScene::render()
 	
 	vkQueuePresentKHR(m_queue, &present_info);
 	
-	if(snap)
-	{
-		takeSnapshot(m_fences[image_index], m_record_images[image_index].img_mem1);
-		snap = false;
-	}
-	
 	if(recording)
-		auto f = std::async(std::launch::async, &MyScene::recordFrame, this, image_index);
+        auto f = std::async(std::launch::async, recordFrame);
 }
 
 
@@ -1232,17 +1031,17 @@ void MyScene::keyPressEvent(QKeyEvent* e)
     case Qt::Key_R:
         if(!recording)
         {
-            m_recorder.startRecording(vid_filename, video_res_x, video_res_y, video_res_x, video_res_y, video_fps);
+            recorder.startRecording(vid_filename, video_res_x, video_res_y, video_res_x, video_res_y, video_fps);
             recording = true;
         }
         else
         {
-            m_recorder.stopRecording();
+            recorder.stopRecording();
             recording = false;
         }
         break;
     case Qt::Key_X:
-        snap = true;
+        takeSnapshot();
         break;
     default:
         break;
@@ -1256,14 +1055,12 @@ void MyScene::keyReleaseEvent(QKeyEvent *event)
 
 void MyScene::mousePressEvent(QMouseEvent* e)
 {
-    if(e->button() == Qt::RightButton)
-        constants.particle_speed = top_speed;
+
 }
 
 void MyScene::mouseReleaseEvent(QMouseEvent* e)
 {
-    if(e->button() == Qt::RightButton)
-        constants.particle_speed = min_speed;
+
 }
 
 void MyScene::mouseDoubleClickEvent(QMouseEvent *event)

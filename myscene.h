@@ -41,42 +41,31 @@ private:
 	void initSynchronizationObjects();
 	void destroySynchronizationObjects();
 	
-	void destroyImage();
-	
 	void initCommandBuffers();
-	void recordRecordCmdBuf();
 	void initImage();
 	void initSampler();
 	void initRenderTargets();
 	void initGraphicsPipeline();
-	void initRecordImages();
 	void initVertexBuffer();
 	void initDescriptorSets();
-	
-	void recordFrame(uint32_t);
 	
 	/*---Surface Independent---*/
 	VkCommandPool m_primary_command_pool = VK_NULL_HANDLE;
 	std::vector<VkCommandBuffer> m_command_buffers;
-	
-	VkCommandPool m_record_command_pool = VK_NULL_HANDLE;
-	std::vector<VkCommandBuffer> m_record_command_buffers;
 	
 	std::vector<VkFence> m_fences;
 	std::vector<VkSemaphore> m_semaphores;
 	
 	VkQueue m_queue = VK_NULL_HANDLE;
 	
-	std::vector<RecordImage> m_record_images;
-	
 	VkBuffer m_vertex_buffer = VK_NULL_HANDLE;
-	VkBufferView m_vertex_buffer_view = VK_NULL_HANDLE;
 	VkDeviceMemory m_vertex_buffer_memory = VK_NULL_HANDLE;
 	
+    VkBuffer m_index_buffer = VK_NULL_HANDLE;
+    VkDeviceMemory m_index_buffer_memory = VK_NULL_HANDLE;
+
 	VkSampler m_sampler = VK_NULL_HANDLE;
-	VkDeviceMemory m_image_memory = VK_NULL_HANDLE;
-	VkImage m_image = VK_NULL_HANDLE;
-	VkImageView m_image_view = VK_NULL_HANDLE;
+    VulkanImage m_image;
 	
 	VkDescriptorSetLayout m_descriptor_set_layout = VK_NULL_HANDLE;
 	VkDescriptorPool m_descriptor_pool = VK_NULL_HANDLE;
@@ -94,7 +83,6 @@ private:
 	
 	/*---Other---*/
 	Timer m_timer;
-	VulkanRecorder m_recorder;
 
     uint16_t m_lastX;
     uint16_t m_lastY;
